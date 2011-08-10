@@ -10,13 +10,15 @@ String.send(:include, ExtendedString)
 
 module WikiCloth
 
-  VERSION = "0.5.0"
+  VERSION = "0.7.0"
 
   class WikiCloth
 
     def initialize(opt={})
       self.options[:link_handler] = opt[:link_handler] unless opt[:link_handler].nil?
       self.load(opt[:data],opt[:params]) unless opt[:data].nil?
+      @current_line = 1
+      @current_row = 0
     end
 
     def load(data,p={})
@@ -54,17 +56,50 @@ module WikiCloth
 
     def render(opt={})
       noedit = false
-      self.params.merge!({ 'WIKI_VERSION' => ::WikiCloth::VERSION })
-      self.options = { :output => :html, :link_handler => self.link_handler, :params => self.params, :sections => self.sections }.merge(opt)
+      self.params.merge!({ 'WIKI_VERSION' => ::WikiCloth::VERSION, 'RUBY_VERSION' => RUBY_VERSION })
+      self.options = { :fast => true, :output => :html, :link_handler => self.link_handler, :params => self.params, :sections => self.sections }.merge(opt)
       self.options[:link_handler].params = options[:params]
       data = self.sections.collect { |s| s.render(self.options) }.join
       data.gsub!(/<!--(.|\s)*?-->/,"")
-      data << "\n" if data.last(1) != "\n"
+      data << "\ngarbage" if data.last(1) != "\n"
+
       buffer = WikiBuffer.new("",options)
-      data.each_char { |c| buffer.add_char(c) }
+
+      begin
+        if self.options[:fast]
+          until data.empty?
+            case data
+            when /\A\w+/
+              data = $'
+              @current_row += $&.length
+              buffer.add_word($&)
+            when /\A[^\w]+(\w|)/m
+              data = $'
+              $&.each_char { |c| add_current_char(buffer,c) }
+            end
+          end
+        else
+          data.each_char { |c| add_current_char(buffer,c) }
+        end
+      rescue => err
+        debug_tree = buffer.buffers.collect { |b| b.debug }.join("-->")
+        puts "Unknown error on line #{@current_line} row #{@current_row}: #{debug_tree}"
+        raise err
+      end
+
+      buffer.eof()
       buffer.to_s
     end
 
+    def add_current_char(buffer,c)
+      if c == "\n"
+        @current_line += 1
+        @current_row = 1
+      else
+        @current_row += 1
+      end
+      buffer.add_char(c)
+    end
     def to_html(opt={})
       self.render(opt)
     end

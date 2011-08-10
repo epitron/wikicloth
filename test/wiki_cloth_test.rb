@@ -1,6 +1,11 @@
+# encoding: utf-8
 require File.expand_path(File.join(File.dirname(__FILE__),'test_helper'))
 
 class WikiParser < WikiCloth::Parser
+  url_for do |page|
+    page
+  end
+
   template do |template|
     case template
     when "noinclude"
@@ -15,6 +20,12 @@ class WikiParser < WikiCloth::Parser
       "{{{{{test|bla}}|wtf}}}"
     when "loop"
       "{{loop}}"
+    when "tablebegin"
+      "<table>"
+    when "tablemid"
+      "<tr><td>test</td></tr>"
+    when "tableend"
+      "</table>"
     end
   end
   external_link do |url,text|
@@ -24,12 +35,108 @@ end
 
 class WikiClothTest < ActiveSupport::TestCase
 
+  test "math tag" do
+    wiki = WikiParser.new(:data => "<math>1-\frac{k}{|E(G_j)|}</math>")
+    begin
+      data = wiki.to_html
+      assert true
+    rescue
+      assert false
+    end
+  end
+
   test "links and references" do
     wiki = WikiCloth::Parser.new(:data => File.open(File.join(File.dirname(__FILE__), '../sample_documents/george_washington.wiki'), READ_MODE) { |f| f.read })
     data = wiki.to_html
-    assert wiki.external_links.size == 62
+    assert wiki.external_links.size == 38
     assert wiki.references.size == 76
-    assert wiki.internal_links.size == 560
+    assert wiki.internal_links.size == 322
+    assert wiki.categories.size == 27
+    assert wiki.languages.size == 101
+  end
+ 
+  test "links with imbedded links" do
+    wiki = WikiParser.new(:data => "[[Datei:Schulze and Gerard 01.jpg|miniatur|Klaus Schulze während eines Konzerts mit [[Lisa Gerrard]]]] hello world")
+    data = wiki.to_html
+    assert data =~ /Lisa Gerrard/
+  end
+ 
+  test "links with trailing letters" do
+    wiki = WikiParser.new(:data => "[[test]]s [[rawr]]alot [[some]]thi.ng [[a]] space")
+    data = wiki.to_html
+    assert data =~ /tests/
+    assert data =~ /href="test"/
+    assert data =~ /rawralot/
+    assert data !~ /something/
+    assert data !~ /aspace/
+  end
+
+  test "piped links with trailing letters" do
+    wiki = WikiParser.new(:data => "[[a|b]]c [[b|c]]d<nowiki>e</nowiki>")
+    data = wiki.to_html
+    assert data =~ /bc/
+    assert data =~ /href="a"/
+    assert data =~ /cd/
+    assert data !~ /cde/
+  end
+
+  test "Embedded images with no explicit title" do
+    wiki = WikiParser.new(:data => "[[Image:Rectangular coordinates.svg|left|thumb|250px]]")
+    test = true
+    begin
+      data = wiki.to_html
+    rescue
+      test = false 
+    end
+    assert test == true
+  end
+
+  test "First item in list not created when list is preceded by a heading" do
+    wiki = WikiParser.new(:data => "=Heading=\n* One\n* Two\n* Three")
+    data = wiki.to_html
+    assert data !~ /\*/
+  end
+
+  test "behavior switch should not show up in the html output" do
+    wiki = WikiParser.new(:data => "__NOTOC__hello world")
+    data = wiki.to_html
+    assert data !~ /TOC/
+  end
+
+  test "template vars should not be parsed inside a pre tag" do
+    wiki = WikiCloth::Parser.new(:data => "<pre>{{{1}}}</pre>")
+    data = wiki.to_html
+    assert data =~ /&#123;&#123;&#123;1&#125;&#125;&#125;/
+  end
+
+  test "[[ links ]] should not work inside pre tags" do
+    data = <<EOS 
+Now instead of calling WikiCloth::Parser directly call your new class.
+
+<pre>  @wiki = WikiParser.new({
+    :params => { "PAGENAME" => "Testing123" },
+    :data => "[[test]] {{hello|world}} From {{ PAGENAME }} -- [www.google.com]"
+  })
+
+  @wiki.to_html</pre>
+EOS
+    wiki = WikiCloth::Parser.new(:data => data)
+    data = wiki.to_html
+    assert data !~ /href/
+    assert data !~ /\{/
+    assert data !~ /\]/
+  end
+
+  test "auto pre at end of document" do
+    wiki = WikiParser.new(:data => "test\n\n hello\n world\nend")
+    data = wiki.to_html
+    assert data =~ /hello/
+    assert data =~ /world/
+
+    wiki = WikiParser.new(:data => "test\n\n hello\n world")
+    data = wiki.to_html
+    assert data =~ /hello/
+    assert data =~ /world/
   end
 
   test "template params" do
@@ -47,6 +154,13 @@ class WikiClothTest < ActiveSupport::TestCase
     wiki = WikiParser.new(:data => "{{moreparamtest|p=othervar|busted=whoo}}")
     data = wiki.to_html
     assert data =~ /whoo/
+  end
+  
+  test "table spanning template" do
+    wiki = WikiParser.new(:data => "{{tablebegin}}{{tablemid}}{{tableend}}")
+    data = wiki.to_html
+    
+    assert data =~ /test/
   end
 
   test "horizontal rule" do
@@ -73,11 +187,11 @@ class WikiClothTest < ActiveSupport::TestCase
     assert data =~ /ul/
     count = 0
     # should == 6.. 3 <li>'s and 3 </li>'s
-    data.gsub(/li/) { |ret| 
-      count += 1 
+    data.gsub(/li/) { |ret|
+      count += 1
       ret
     }
-    assert count == 6
+    assert_equal count.to_s, "6"
   end
 
   test "noinclude and includeonly tags" do
@@ -102,7 +216,6 @@ class WikiClothTest < ActiveSupport::TestCase
     data = wiki.to_html
     assert !(data =~ /<script/)
     assert !(data =~ /onmouseover/)
-    assert data =~ /exlink/
   end
 
   test "nowiki and code tags" do
@@ -115,11 +228,11 @@ class WikiClothTest < ActiveSupport::TestCase
   test "disable edit stuff" do
     wiki = WikiParser.new(:data => "= Hallo =")
     data = wiki.to_html
-    assert_equal data, "<p>\n<h1><span class=\"editsection\">&#91;<a href=\"?section=Hallo\" target=\"_blank\" class=\"exlink\">edit</a>&#93;</span> <span class=\"mw-headline\" id=\"Hallo\">Hallo</span></h1>\n</p>"
+    assert_equal data, "\n<p><h1><span class=\"editsection\">&#91;<a href=\"?section=Hallo\" title=\"Edit section: Hallo\">edit</a>&#93;</span> <span class=\"mw-headline\" id=\"Hallo\"><a name=\"Hallo\">Hallo</a></span></h1></p>"
 
     data = wiki.to_html(:noedit => true)
-    assert_equal data, "<p>\n<h1> <span class=\"mw-headline\" id=\"Hallo\">Hallo</span></h1>\n</p>"
- 
+    assert_equal data, "\n<p><h1><span class=\"mw-headline\" id=\"Hallo\"><a name=\"Hallo\">Hallo</a></span></h1></p>"
+
   end
 
 end

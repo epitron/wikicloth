@@ -5,6 +5,16 @@ module WikiCloth
 
 class WikiLinkHandler
 
+  FILE_NAMESPACES = ["datei","image","file","media"]
+  CATEGORY_NAMESPACES = ['kategorie','category']
+  LANGUAGE_NAMESPACES = ['af','am','ang','ar','arc','ast','az','bn','zh-min-nan','ba','be','be-x-old','bar','bs','br','bg','ca',
+	'ceb','cs','co','cy','da','de','dv','et','el','es','eo','eu','fa','fo','fr','fy','ga','gd','gl','gan','ko','hy','hi','hr',
+	'io','id','is','it','he','jv','kn','pam','ka','sw','ku','la','lv','lb','lt','hu','mk','mg','ml','mr','arz','ms','nah','nl',
+	'ja','no','nn','oc','uz','pap','nds','pl','pt','ksh','ro','qu','ru','sa','sco','sq','scn','simple','sk','sl','sr','sh',
+	'fi','sv','tl','ta','th','tg','tr','uk','ur','vi','zh-classical','yi','bat-smg','zh','lo','en','gn','map-bms','pdc','eml',
+	'ki','hak','ia','ky','lad','nds-nl','ne','nrm','nov','sm','si','su','kab','te','vec','fiu-vro','wa','war','wuu','zh-yue',
+	'diq']
+
   def references
     @references ||= []
   end
@@ -21,24 +31,39 @@ class WikiLinkHandler
     nil
   end
 
-  def toc_children(children)
-    ret = "<ul>"
-    for child in children
-      ret += "<li><a href=\"##{child.id}\">#{child.title}</a>"
-      ret += toc_children(child.children) unless child.children.empty?
-      ret += "</li>"
+  def section_list(root=nil)
+    ret = []
+    root = sections[0].children if root.nil?
+    root.each do |child|
+      ret << child
+      unless child.children.empty?
+        ret << [section_list(child.children)]
+      end
     end
-    "#{ret}</ul>"
+    ret.flatten
   end
 
   def toc(sections)
-    ret = "<table id=\"toc\" class=\"toc\" summary=\"Contents\"><tr><td><div style=\"font-weight:bold\">Table of Contents</div><ul>"
-    for section in sections[0].children
-      ret += "<li><a href=\"##{section.id}\">#{section.title}</a>"
-      ret += toc_children(section.children) unless section.children.empty?
-      ret += "</li>"
+    ret = "<table id=\"toc\" class=\"toc\" summary=\"Contents\"><tr><td><div style=\"font-weight:bold\">Table of Contents</div>"
+    previous_depth = 1
+    section_list.each do |section|
+      if section.depth > previous_depth
+        c = section.depth - previous_depth
+        c.times { ret += "<ul>" }
+        ret += "<li><a href=\"##{section.id}\">#{section.title}</a>"
+      elsif section.depth == previous_depth
+        ret += "</li><li><a href=\"##{section.id}\">#{section.title}</a>"
+      else 
+        ret += "</li>" unless previous_depth == 1
+        c = previous_depth - section.depth
+        c.times { ret += "</ul>" }
+        ret += "<li><a href=\"##{section.id}\">#{section.title}</a>"
+      end
+      previous_depth = section.depth
     end
-    "#{ret}</ul></td></tr></table>"
+    ret += "</li>"
+    (previous_depth-1).times { ret += "</ul>" }
+    "#{ret}</td></tr></table>"
   end
 
   def external_links
@@ -47,6 +72,14 @@ class WikiLinkHandler
 
   def internal_links
     @internal_links ||= []
+  end
+
+  def languages
+    @languages ||= {}
+  end
+
+  def categories
+    @categories ||= []
   end
 
   def find_reference_by_name(n)
@@ -59,6 +92,14 @@ class WikiLinkHandler
     return nil
   end
 
+  def categories=(val)
+    @categories = val
+  end
+
+  def languages=(val)
+    @languages = val
+  end
+
   def references=(val)
     @references = val
   end
@@ -69,7 +110,7 @@ class WikiLinkHandler
 
   def external_link(url,text)
     self.external_links << url
-    elem.a({ :href => url }) { |x| x << (text.blank? ? url : text) }
+    elem.a({ :href => url, :target => "_blank" }) { |x| x << (text.blank? ? url : text) }
   end
 
   def external_links=(val)
@@ -81,7 +122,7 @@ class WikiLinkHandler
   end
 
   def url_for(page)
-    "javascript:void(0)"
+    "#{page}"
   end
 
   def link_attributes_for(page)
@@ -99,13 +140,20 @@ class WikiLinkHandler
     if self.params.has_key?(resource)
       self.params[resource]
     else
-      ret = template(resource)
-      unless ret.nil?
-        @included_templates ||= {}
-        @included_templates[resource] ||= 0
+      @template_cache ||= {}
+      if @template_cache[resource]
         @included_templates[resource] += 1
+        @template_cache[resource]
+      else
+        ret = template(resource)
+        unless ret.nil?
+          @included_templates ||= {}
+          @included_templates[resource] ||= 0
+          @included_templates[resource] += 1
+        end
+        @template_cache[resource] = ret
+        ret
       end
-      ret
     end
   end
 
@@ -121,8 +169,12 @@ class WikiLinkHandler
     ret = ""
     prefix.downcase!
     case
-    when ["image","file","media"].include?(prefix)
+    when FILE_NAMESPACES.include?(prefix)
       ret += wiki_image(resource,options)
+    when CATEGORY_NAMESPACES.include?(prefix)
+      self.categories << resource
+    when LANGUAGE_NAMESPACES.include?(prefix)
+      self.languages[prefix] = resource
     else
       title = options[0] ? options[0] : "#{prefix}:#{resource}"
       ret += link_for("#{prefix}:#{resource}",title)
@@ -146,12 +198,12 @@ class WikiLinkHandler
       type = nil
       w = 180
       h = nil
-      title = nil
+      title = ''
       ffloat = false
 
       options.each do |x|
         case
-        when ["thumb","thumbnail","frame","border"].include?(x.strip)
+        when ["miniatur","thumb","thumbnail","frame","border"].include?(x.strip)
           type = x.strip
         when ["left","right","center","none"].include?(x.strip)
           ffloat = true
@@ -172,7 +224,7 @@ class WikiLinkHandler
       css << "border:1px solid #000" if type == "border"
 
       sane_title = title.nil? ? "" : title.gsub(/<\/?[^>]*>/, "")
-      if type == "thumb" || type == "thumbnail" || type == "frame"
+      if ["thumb","thumbnail","frame","miniatur"].include?(type)
         pre_img = '<div class="thumb t' + loc + '"><div class="thumbinner" style="width: ' + w.to_s +
             'px;"><a href="" class="image" title="' + sane_title + '">'
         post_img = '</a><div class="thumbcaption">' + title + '</div></div></div>'

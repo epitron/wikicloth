@@ -1,5 +1,6 @@
 require 'rubygems'
 require 'builder'
+require 'rexml/document'
 
 module WikiCloth
 
@@ -8,11 +9,12 @@ class WikiBuffer::HTMLElement < WikiBuffer
   ALLOWED_ELEMENTS = ['a','b','i','img','div','span','sup','sub','strike','s','u','font','big','ref','tt','del',
 	'small','blockquote','strong','pre','code','references','ol','li','ul','dd','dt','dl','center',
 	'h1','h2','h3','h4','h5','h6','p','table','tr','td','th','tbody','thead','tfoot']
-  ALLOWED_ATTRIBUTES = ['src','id','name','style','class','href','start','value','colspan','align','boder',
-        'cellpadding','cellspacing']
+  ALLOWED_ATTRIBUTES = ['src','id','name','style','class','href','start','value','colspan','align','border',
+        'cellpadding','cellspacing','name','valign','color','rowspan','nowrap','title','rel','for']
   ESCAPED_TAGS = [ 'nowiki', 'pre', 'code' ]
   SHORT_TAGS = [ 'meta','br','hr']
   NO_NEED_TO_CLOSE = ['li','p'] + SHORT_TAGS
+  DISABLE_GLOBALS_FOR = ESCAPED_TAGS + [ 'math' ]
 
   def initialize(d="",options={},check=nil)
     super("",options)
@@ -28,15 +30,16 @@ class WikiBuffer::HTMLElement < WikiBuffer
     when "template"
       self.get_param("__name")
     else
-      ret = self.element_name
+      ret = self.class.to_s + "["
+      ret += self.element_name
       tmp = self.get_param("id")
       ret += tmp.nil? ? "" : "##{tmp}"
-      ret
+      ret + "]"
     end
   end
 
   def run_globals?
-    return ESCAPED_TAGS.include?(self.element_name) ? false : true
+    return DISABLE_GLOBALS_FOR.include?(self.element_name) ? false : true
   end
 
   def to_s
@@ -54,6 +57,28 @@ class WikiBuffer::HTMLElement < WikiBuffer
 
     lhandler = @options[:link_handler]
     case self.element_name
+    when "math"
+      blahtex_path = @options[:blahtex_path] || '/usr/bin/blahtex'
+      blahtex_png_path = @options[:blahtex_png_path] || '/tmp'
+
+      if File.exists?(blahtex_path)
+        begin
+          response = `echo '#{self.element_content}' | #{blahtex_path} --png --mathml --png-directory #{blahtex_png_path}`
+          xml_response = REXML::Document.new(response).root
+          if @options[:blahtex_html_prefix]
+            file_md5 = xml_response.elements["png/md5"].text
+            return "<img src=\"#{File.join(@options[:blahtex_html_prefix],"#{file_md5}.png")}\" />"
+          else
+            html = xml_response.elements["mathml/markup"].text
+            eattr = { "xmlns" => "http://www.w3.org/1998/Math/MathML" }.merge(self.element_attributes)
+            return elem.tag!(self.element_name, eattr) { |x| x << xml_response.elements["mathml/markup"].children.to_s }
+          end
+        rescue => err
+          return "<span class=\"error\">Unable to parse MathML: #{err}</span>"
+        end
+      else
+        return "<span class=\"error\">blatex binary not found</span>"
+      end
     when "template"
       return self.element_content
     when "noinclude"
@@ -88,7 +113,12 @@ class WikiBuffer::HTMLElement < WikiBuffer
     when "nowiki"
       return self.element_content
     when "a"
-      return @options[:link_handler].external_link(self.element_attributes['href'], self.element_content)
+      if self.element_attributes['href'] =~ /:\/\//
+        return @options[:link_handler].external_link(self.element_attributes['href'], self.element_content)
+      elsif self.element_attributes['href'].nil? || self.element_attributes['href'] =~ /^\s*([\?\/])/
+        # if a element has no href attribute, or href starts with / or ?
+        return elem.tag!(self.element_name, self.element_attributes) { |x| x << self.element_content }
+      end
     end
 
     tmp = elem.tag!(self.element_name, self.element_attributes) { |x| x << self.element_content }
